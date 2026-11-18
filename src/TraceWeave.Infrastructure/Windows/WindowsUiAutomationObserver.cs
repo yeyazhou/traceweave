@@ -20,8 +20,6 @@ public sealed class WindowsUiAutomationObserver : IDisposable
     private readonly IWindowExclusionPolicy _exclusionPolicy;
     private readonly ITextRedactor _redactor;
     private readonly bool _captureCommittedText;
-    private readonly AutomationFocusChangedEventHandler _focusChangedHandler;
-    private readonly AutoResetEvent _wakeEvent = new(false);
     private readonly ManualResetEventSlim _ready = new(false);
     private readonly Thread _workerThread;
 
@@ -45,7 +43,6 @@ public sealed class WindowsUiAutomationObserver : IDisposable
         _exclusionPolicy = exclusionPolicy;
         _redactor = redactor;
         _captureCommittedText = captureCommittedText;
-        _focusChangedHandler = (_, _) => _wakeEvent.Set();
 
         _workerThread = new Thread(UiAutomationWorker)
         {
@@ -58,17 +55,15 @@ public sealed class WindowsUiAutomationObserver : IDisposable
         if (!_ready.Wait(StartupTimeoutMilliseconds))
         {
             _disposed = true;
-            _wakeEvent.Set();
             throw new TimeoutException(
-                "TraceWeave UI Automation worker did not start within 3 seconds.");
+                "TraceWeave UI Automation worker thread did not start within 3 seconds.");
         }
 
         if (_startupException is not null)
         {
             _disposed = true;
-            _wakeEvent.Set();
             throw new InvalidOperationException(
-                "TraceWeave could not initialize the UI Automation worker.",
+                "TraceWeave could not start the UI Automation worker.",
                 _startupException);
         }
     }
@@ -98,18 +93,15 @@ public sealed class WindowsUiAutomationObserver : IDisposable
 
     private void UiAutomationWorker()
     {
+        // Signal thread startup before touching UI Automation. Some UIA providers
+        // can block while COM/event infrastructure is being initialized; that must
+        // never prevent the recording session from starting.
+        _ready.Set();
+
         try
         {
-            Automation.AddAutomationFocusChangedEventHandler(_focusChangedHandler);
-            _ready.Set();
-
-            ProcessFocusedElement();
-
             while (!_disposed)
             {
-                _wakeEvent.WaitOne(PollIntervalMilliseconds);
-                if (_disposed) break;
-
                 try
                 {
                     ProcessFocusedElement();
@@ -118,15 +110,16 @@ public sealed class WindowsUiAutomationObserver : IDisposable
                 {
                     // UIA providers can disappear or become temporarily unavailable.
                 }
-            }
 
-            Automation.RemoveAutomationFocusChangedEventHandler(
-                _focusChangedHandler);
+                // Deliberately polling instead of registering a global focus-change
+                // event. Event registration can synchronously enter third-party UIA
+                // providers and has caused startup stalls on real Windows desktops.
+                Thread.Sleep(PollIntervalMilliseconds);
+            }
         }
         catch (Exception exception)
         {
             _startupException = exception;
-            _ready.Set();
         }
         finally
         {
@@ -434,7 +427,6 @@ public sealed class WindowsUiAutomationObserver : IDisposable
         if (_disposed) return;
 
         _disposed = true;
-        _wakeEvent.Set();
 
         if (Thread.CurrentThread != _workerThread &&
             _workerThread.IsAlive)
@@ -442,7 +434,6 @@ public sealed class WindowsUiAutomationObserver : IDisposable
             _workerThread.Join(250);
         }
 
-        _wakeEvent.Dispose();
         _ready.Dispose();
     }
 }

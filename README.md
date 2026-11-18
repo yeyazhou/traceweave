@@ -4,9 +4,9 @@
 
 TraceWeave is a Windows-first, local-first activity recorder that turns real desktop work into editable, reviewable, reusable AI workflows.
 
-> **Status: v0.1.1 initial usable version.** Recording, first-pass optimization, manual revision, second-pass review, and workflow export are implemented. v0.1.1 hardens capture responsiveness by moving UI Automation off the WPF thread, excluding TraceWeave from self-capture, reducing UIA polling, and batching timeline rendering. Safe workflow execution/playback, OCR/screenshot evidence, and richer system/file event adapters remain the next phase.
+> **Status: v0.1.2 initial usable version.** Recording, first-pass optimization, manual revision, second-pass review, and workflow export are implemented. v0.1.2 fixes the UI Automation startup stall by removing global focus-event registration from the recording startup path, starting the dedicated MTA worker before any UIA provider call, and keeping UIA observation polling-based. Safe workflow execution/playback, OCR/screenshot evidence, and richer system/file event adapters remain the next phase.
 
-## What v0.1.1 can do
+## What v0.1.2 can do
 
 ### 1. Multi-source Windows capture
 
