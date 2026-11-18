@@ -21,6 +21,8 @@ public sealed class DefaultWindowExclusionPolicy : IWindowExclusionPolicy
         "1password",
         "bitwarden",
         "lastpass",
+        "TraceWeave.App",
+        "TraceWeave",
         "authy"
     };
 

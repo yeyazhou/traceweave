@@ -74,10 +74,11 @@ public sealed class WindowsCaptureCoordinator : IAsyncDisposable
         _lastWindowKey = null;
         _exclusionPolicy = new DefaultWindowExclusionPolicy(options.ExcludedProcessNames);
 
-        _eventChannel = Channel.CreateUnbounded<CaptureEvent>(new UnboundedChannelOptions
+        _eventChannel = Channel.CreateBounded<CaptureEvent>(new BoundedChannelOptions(8192)
         {
             SingleReader = true,
             SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait,
             AllowSynchronousContinuations = false
         });
         _writerTask = Task.Run(() => WriteEventsAsync(_eventChannel.Reader));
@@ -87,7 +88,6 @@ public sealed class WindowsCaptureCoordinator : IAsyncDisposable
             if (options.CaptureUiAutomation)
             {
                 _uiAutomationObserver = new WindowsUiAutomationObserver(
-                    _dispatcher,
                     _exclusionPolicy,
                     _redactor,
                     options.CaptureCommittedText);
@@ -196,9 +196,9 @@ public sealed class WindowsCaptureCoordinator : IAsyncDisposable
 
     private void OnInputObserved(RawInputObservation observation)
     {
-        _dispatcher.BeginInvoke(
-            DispatcherPriority.Background,
-            new Action(() => HandleInputObservation(observation)));
+        // Input-hook callbacks must return immediately. UI Automation and window
+        // metadata are resolved on a background MTA thread, never on the WPF UI thread.
+        _ = Task.Run(() => HandleInputObservation(observation));
     }
 
     private void HandleInputObservation(RawInputObservation observation)
@@ -305,6 +305,13 @@ public sealed class WindowsCaptureCoordinator : IAsyncDisposable
 
     private void OnClipboardUpdated(object? sender, EventArgs args)
     {
+        // WM_CLIPBOARDUPDATE is delivered on the WPF dispatcher thread. Reading the
+        // clipboard can block on another process, so never do it in the window hook.
+        _ = Task.Run(HandleClipboardUpdated);
+    }
+
+    private void HandleClipboardUpdated()
+    {
         if (!CanCapture() || _options?.CaptureClipboardMetadata != true) return;
 
         var window = WindowContextReader.ReadForeground();
@@ -325,7 +332,10 @@ public sealed class WindowsCaptureCoordinator : IAsyncDisposable
                 if (Clipboard.ContainsText(TextDataFormat.UnicodeText))
                 {
                     var rawText = Clipboard.GetText(TextDataFormat.UnicodeText);
-                    var redaction = _redactor.Inspect(rawText, window.ProcessName, window.Title);
+                    var redaction = _redactor.Inspect(
+                        rawText,
+                        window.ProcessName,
+                        window.Title);
                     text = redaction.Value;
                     disposition = redaction.Disposition;
                     sensitivity = redaction.Sensitivity;
@@ -341,7 +351,8 @@ public sealed class WindowsCaptureCoordinator : IAsyncDisposable
             }
         }
 
-        var sequence = GetClipboardSequenceNumber().ToString(CultureInfo.InvariantCulture);
+        var sequence = GetClipboardSequenceNumber().ToString(
+            CultureInfo.InvariantCulture);
         var target = _uiAutomationObserver?.CurrentTarget;
 
         Enqueue(new CaptureEvent(
@@ -361,7 +372,9 @@ public sealed class WindowsCaptureCoordinator : IAsyncDisposable
             sequence,
             Metadata: ImmutableDictionary<string, string>.Empty.Add(
                 "captureMode",
-                _options.CaptureClipboardText ? "text-opt-in" : "metadata-only"),
+                _options.CaptureClipboardText
+                    ? "text-opt-in"
+                    : "metadata-only"),
             Sensitivity: sensitivity));
     }
 

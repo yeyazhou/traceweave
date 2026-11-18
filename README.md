@@ -4,9 +4,9 @@
 
 TraceWeave is a Windows-first, local-first activity recorder that turns real desktop work into editable, reviewable, reusable AI workflows.
 
-> **Status: v0.1.0 initial usable version.** Recording, first-pass optimization, manual revision, second-pass review, and workflow export are implemented. Safe workflow execution/playback, OCR/screenshot evidence, and richer system/file event adapters remain the next phase.
+> **Status: v0.1.1 initial usable version.** Recording, first-pass optimization, manual revision, second-pass review, and workflow export are implemented. v0.1.1 hardens capture responsiveness by moving UI Automation off the WPF thread, excluding TraceWeave from self-capture, reducing UIA polling, and batching timeline rendering. Safe workflow execution/playback, OCR/screenshot evidence, and richer system/file event adapters remain the next phase.
 
-## What v0.1.0 can do
+## What v0.1.1 can do
 
 ### 1. Multi-source Windows capture
 
@@ -43,7 +43,7 @@ This is deliberately conservative: when the evidence is insufficient to know whe
 
 Every edit creates a new workflow revision.
 
-Supported in v0.1:
+Supported in v0.1.x:
 
 - Edit step title.
 - Edit intent.
@@ -155,7 +155,7 @@ $dotnet = "$env:USERPROFILE\.dotnet\dotnet.exe"
 & $dotnet test .\TraceWeave.sln -c Debug
 ~~~
 
-Current test suite: **12 passing**.
+Current test suite: **15 passing**.
 
 ## Run
 

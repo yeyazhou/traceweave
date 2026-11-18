@@ -1,7 +1,11 @@
-using System.IO;using System.Collections.ObjectModel;
+using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
+using System.IO;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using TraceWeave.Core.Capture;
 using TraceWeave.Core.Review;
 using TraceWeave.Core.Workflows;
@@ -17,6 +21,9 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<ProposalView> _proposals = [];
     private readonly ObservableCollection<WorkflowStep> _steps = [];
     private readonly ObservableCollection<string> _revisions = [];
+    private readonly ConcurrentQueue<string> _pendingTimeline = new();
+    private readonly DispatcherTimer _timelineDrainTimer;
+    private long _observedEventCount;
     private bool _allowClose;
 
     public MainWindow()
@@ -28,6 +35,15 @@ public partial class MainWindow : Window
         ProposalList.ItemsSource = _proposals;
         StepList.ItemsSource = _steps;
         RevisionList.ItemsSource = _revisions;
+
+        _timelineDrainTimer = new DispatcherTimer(
+            DispatcherPriority.Background,
+            Dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(100)
+        };
+        _timelineDrainTimer.Tick += (_, _) => DrainTimeline();
+        _timelineDrainTimer.Start();
 
         _runtime = new TraceWeaveRuntime(Dispatcher);
         _runtime.EventObserved += OnEventObserved;
@@ -55,6 +71,7 @@ public partial class MainWindow : Window
         e.Cancel = true;
         try
         {
+            _timelineDrainTimer.Stop();
             await _runtime.DisposeAsync();
         }
         finally
@@ -102,7 +119,9 @@ public partial class MainWindow : Window
                 ExcludedProcessNames = ParseExcludedProcesses()
             };
 
+            _pendingTimeline.Clear();
             _timeline.Clear();
+            Interlocked.Exchange(ref _observedEventCount, 0);
             _steps.Clear();
             _revisions.Clear();
             _findings.Clear();
@@ -171,40 +190,60 @@ public partial class MainWindow : Window
 
     private void OnEventObserved(CaptureEvent captureEvent)
     {
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            var target = captureEvent.AutomationId ?? captureEvent.ElementName ?? captureEvent.ControlType;
-            var context = string.Join(
-                " · ",
-                new[]
-                {
-                    captureEvent.ProcessName,
-                    captureEvent.WindowTitle,
-                    target
-                }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        var target = captureEvent.AutomationId ??
+                     captureEvent.ElementName ??
+                     captureEvent.ControlType;
 
-            var text = captureEvent.TextDisposition == TextCaptureDisposition.Captured && !string.IsNullOrWhiteSpace(captureEvent.TextValue)
-                ? $" text={TrimForUi(captureEvent.TextValue, 60)}"
-                : captureEvent.TextDisposition is TextCaptureDisposition.Redacted or TextCaptureDisposition.Suppressed
-                    ? $" text={captureEvent.TextDisposition}"
-                    : string.Empty;
-
-            _timeline.Add($"{captureEvent.Sequence:0000}  {captureEvent.OccurredAtUtc:HH:mm:ss.fff}  {captureEvent.Kind}  {context}{text}");
-            if (_timeline.Count > 500)
+        var context = string.Join(
+            " · ",
+            new[]
             {
-                _timeline.RemoveAt(0);
-            }
+                captureEvent.ProcessName,
+                captureEvent.WindowTitle,
+                target
+            }.Where(value => !string.IsNullOrWhiteSpace(value)));
 
-            RecordingCountText.Text = _timeline.Count.ToString();
-            DashboardEventCount.Text = _timeline.Count.ToString();
+        var text = captureEvent.TextDisposition == TextCaptureDisposition.Captured &&
+                   !string.IsNullOrWhiteSpace(captureEvent.TextValue)
+            ? $" text={TrimForUi(captureEvent.TextValue, 60)}"
+            : captureEvent.TextDisposition is TextCaptureDisposition.Redacted or
+                TextCaptureDisposition.Suppressed
+                ? $" text={captureEvent.TextDisposition}"
+                : string.Empty;
 
-            if (TimelineList.Items.Count > 0)
-            {
-                TimelineList.ScrollIntoView(TimelineList.Items[^1]);
-            }
-        }));
+        _pendingTimeline.Enqueue(
+            $"{captureEvent.Sequence:0000}  {captureEvent.OccurredAtUtc:HH:mm:ss.fff}  " +
+            $"{captureEvent.Kind}  {context}{text}");
+
+        Interlocked.Increment(ref _observedEventCount);
     }
 
+    private void DrainTimeline()
+    {
+        const int maxItemsPerTick = 80;
+        var drained = 0;
+
+        while (drained < maxItemsPerTick &&
+               _pendingTimeline.TryDequeue(out var item))
+        {
+            _timeline.Add(item);
+            drained++;
+        }
+
+        while (_timeline.Count > 500)
+        {
+            _timeline.RemoveAt(0);
+        }
+
+        var count = Interlocked.Read(ref _observedEventCount).ToString();
+        RecordingCountText.Text = count;
+        DashboardEventCount.Text = count;
+
+        if (drained > 0 && TimelineList.Items.Count > 0)
+        {
+            TimelineList.ScrollIntoView(TimelineList.Items[^1]);
+        }
+    }
     private void OnStateChanged(bool recording, bool paused)
     {
         Dispatcher.BeginInvoke(new Action(() =>
